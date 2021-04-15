@@ -17,18 +17,41 @@
 
 package org.apache.flink.runtime.io.network.partition;
 
-/**
- * Container for meta-data of a data set.
- */
+import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.util.Preconditions;
+
+import java.util.Optional;
+
+/** Container for meta-data of a data set. */
 public final class DataSetMetaInfo {
+    private static final int UNKNOWN = -1;
 
-	private final int numTotalPartitions;
+    private final int numRegisteredPartitions;
+    private final int numTotalPartitions;
 
-	public DataSetMetaInfo(int numTotalPartitions) {
-		this.numTotalPartitions = numTotalPartitions;
-	}
+    private DataSetMetaInfo(int numRegisteredPartitions, int numTotalPartitions) {
+        this.numRegisteredPartitions = numRegisteredPartitions;
+        this.numTotalPartitions = numTotalPartitions;
+    }
 
-	public int getNumTotalPartitions() {
-		return numTotalPartitions;
-	}
+    public Optional<Integer> getNumRegisteredPartitions() {
+        return numRegisteredPartitions == UNKNOWN
+                ? Optional.empty()
+                : Optional.of(numRegisteredPartitions);
+    }
+
+    public int getNumTotalPartitions() {
+        return numTotalPartitions;
+    }
+
+    static DataSetMetaInfo withoutNumRegisteredPartitions(int numTotalPartitions) {
+        return new DataSetMetaInfo(UNKNOWN, numTotalPartitions);
+    }
+
+    @VisibleForTesting
+    public static DataSetMetaInfo withNumRegisteredPartitions(
+            int numRegisteredPartitions, int numTotalPartitions) {
+        Preconditions.checkArgument(numRegisteredPartitions > 0);
+        return new DataSetMetaInfo(numRegisteredPartitions, numTotalPartitions);
+    }
 }

@@ -273,7 +273,7 @@ object AkkaUtils {
 
     val logLevel = getLogLevel
 
-    val supervisorStrategy = classOf[StoppingSupervisorWithoutLoggingActorKilledExceptionStrategy]
+    val supervisorStrategy = classOf[EscalatingSupervisorStrategy]
       .getCanonicalName
 
     val config =
@@ -284,6 +284,7 @@ object AkkaUtils {
         | loggers = ["akka.event.slf4j.Slf4jLogger"]
         | logging-filter = "akka.event.slf4j.Slf4jLoggingFilter"
         | log-config-on-start = off
+        | logger-startup-timeout = 30s
         |
         | jvm-exit-on-fatal-error = $jvmExitOnFatalError
         |
@@ -302,6 +303,15 @@ object AkkaUtils {
         |
         |   default-dispatcher {
         |     throughput = $akkaThroughput
+        |   }
+        |
+        |   supervisor-dispatcher {
+        |     type = Dispatcher
+        |     executor = "thread-pool-executor"
+        |     thread-pool-executor {
+        |       core-pool-size-min = 1
+        |       core-pool-size-max = 1
+        |     }
         |   }
         | }
         |}
@@ -378,20 +388,6 @@ object AkkaUtils {
     ConfigFactory.parseString(config)
   }
 
-  private def validateHeartbeat(pauseParamName: String,
-                                pauseValue: time.Duration,
-                                intervalParamName: String,
-                                intervalValue: time.Duration): Unit = {
-    if (pauseValue.compareTo(intervalValue) <= 0) {
-      throw new IllegalConfigurationException(
-        "%s [%s] must greater than %s [%s]",
-        pauseParamName,
-        pauseValue,
-        intervalParamName,
-        intervalValue)
-    }
-  }
-
   /**
    * Creates a Akka config for a remote actor system listening on port on the network interface
    * identified by bindAddress.
@@ -419,24 +415,6 @@ object AkkaUtils {
         configuration.getString(
           AkkaOptions.STARTUP_TIMEOUT,
           TimeUtils.getStringInMillis(akkaAskTimeout.multipliedBy(10L)))))
-
-    val transportHeartbeatIntervalDuration = TimeUtils.parseDuration(
-      configuration.getString(AkkaOptions.TRANSPORT_HEARTBEAT_INTERVAL))
-
-    val transportHeartbeatPauseDuration = TimeUtils.parseDuration(
-      configuration.getString(AkkaOptions.TRANSPORT_HEARTBEAT_PAUSE))
-
-    validateHeartbeat(
-      AkkaOptions.TRANSPORT_HEARTBEAT_PAUSE.key(),
-      transportHeartbeatPauseDuration,
-      AkkaOptions.TRANSPORT_HEARTBEAT_INTERVAL.key(),
-      transportHeartbeatIntervalDuration)
-
-    val transportHeartbeatInterval = TimeUtils.getStringInMillis(transportHeartbeatIntervalDuration)
-
-    val transportHeartbeatPause = TimeUtils.getStringInMillis(transportHeartbeatPauseDuration)
-
-    val transportThreshold = configuration.getDouble(AkkaOptions.TRANSPORT_THRESHOLD)
 
     val akkaTCPTimeout = TimeUtils.getStringInMillis(
       TimeUtils.parseDuration(configuration.getString(AkkaOptions.TCP_TIMEOUT)))
@@ -515,10 +493,11 @@ object AkkaUtils {
          |  remote {
          |    startup-timeout = $startupTimeout
          |
+         |    # disable the transport failure detector by setting very high values
          |    transport-failure-detector{
-         |      acceptable-heartbeat-pause = $transportHeartbeatPause
-         |      heartbeat-interval = $transportHeartbeatInterval
-         |      threshold = $transportThreshold
+         |      acceptable-heartbeat-pause = 6000 s
+         |      heartbeat-interval = 1000 s
+         |      threshold = 300
          |    }
          |
          |    netty {
@@ -782,10 +761,6 @@ object AkkaUtils {
 
   def getLookupTimeout(config: Configuration): time.Duration = {
     TimeUtils.parseDuration(config.getString(AkkaOptions.LOOKUP_TIMEOUT))
-  }
-
-  def getClientTimeout(config: Configuration): time.Duration = {
-    TimeUtils.parseDuration(config.getString(AkkaOptions.CLIENT_TIMEOUT))
   }
 
   /** Returns the address of the given [[ActorSystem]]. The [[Address]] object contains

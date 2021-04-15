@@ -26,8 +26,8 @@ import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.resourcemanager.ResourceManagerGateway;
 import org.apache.flink.runtime.rest.handler.HandlerRequest;
 import org.apache.flink.runtime.rest.messages.EmptyRequestBody;
+import org.apache.flink.runtime.rest.messages.LogFileNamePathParameter;
 import org.apache.flink.runtime.rest.messages.UntypedResponseMessageHeaders;
-import org.apache.flink.runtime.rest.messages.taskmanager.LogFileNamePathParameter;
 import org.apache.flink.runtime.rest.messages.taskmanager.TaskManagerFileMessageParameters;
 import org.apache.flink.runtime.taskexecutor.TaskExecutor;
 import org.apache.flink.runtime.webmonitor.RestfulGateway;
@@ -38,30 +38,42 @@ import javax.annotation.Nonnull;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
-/**
- * Rest handler which serves the custom file of the {@link TaskExecutor}.
- */
-public class TaskManagerCustomLogHandler extends AbstractTaskManagerFileHandler<TaskManagerFileMessageParameters> {
+/** Rest handler which serves the custom file of the {@link TaskExecutor}. */
+public class TaskManagerCustomLogHandler
+        extends AbstractTaskManagerFileHandler<TaskManagerFileMessageParameters> {
 
-	public TaskManagerCustomLogHandler(
-			@Nonnull GatewayRetriever<? extends RestfulGateway> leaderRetriever,
-			@Nonnull Time timeout,
-			@Nonnull Map<String, String> responseHeaders,
-			@Nonnull UntypedResponseMessageHeaders<EmptyRequestBody, TaskManagerFileMessageParameters> untypedResponseMessageHeaders,
-			@Nonnull GatewayRetriever<ResourceManagerGateway> resourceManagerGatewayRetriever,
-			@Nonnull TransientBlobService transientBlobService,
-			@Nonnull Time cacheEntryDuration) {
-		super(leaderRetriever, timeout, responseHeaders, untypedResponseMessageHeaders, resourceManagerGatewayRetriever, transientBlobService, cacheEntryDuration);
+    public TaskManagerCustomLogHandler(
+            @Nonnull GatewayRetriever<? extends RestfulGateway> leaderRetriever,
+            @Nonnull Time timeout,
+            @Nonnull Map<String, String> responseHeaders,
+            @Nonnull
+                    UntypedResponseMessageHeaders<
+                                    EmptyRequestBody, TaskManagerFileMessageParameters>
+                            untypedResponseMessageHeaders,
+            @Nonnull GatewayRetriever<ResourceManagerGateway> resourceManagerGatewayRetriever,
+            @Nonnull TransientBlobService transientBlobService,
+            @Nonnull Time cacheEntryDuration) {
+        super(
+                leaderRetriever,
+                timeout,
+                responseHeaders,
+                untypedResponseMessageHeaders,
+                resourceManagerGatewayRetriever,
+                transientBlobService,
+                cacheEntryDuration);
+    }
 
-	}
+    @Override
+    protected CompletableFuture<TransientBlobKey> requestFileUpload(
+            ResourceManagerGateway resourceManagerGateway,
+            Tuple2<ResourceID, String> taskManagerIdAndFileName) {
+        return resourceManagerGateway.requestTaskManagerFileUploadByName(
+                taskManagerIdAndFileName.f0, taskManagerIdAndFileName.f1, timeout);
+    }
 
-	@Override
-	protected CompletableFuture<TransientBlobKey> requestFileUpload(ResourceManagerGateway resourceManagerGateway, Tuple2<ResourceID, String> taskManagerIdAndFileName) {
-		return resourceManagerGateway.requestTaskManagerFileUploadByName(taskManagerIdAndFileName.f0, taskManagerIdAndFileName.f1, timeout);
-	}
-
-	@Override
-	protected String getFileName(HandlerRequest<EmptyRequestBody, TaskManagerFileMessageParameters> handlerRequest) {
-		return handlerRequest.getPathParameter(LogFileNamePathParameter.class);
-	}
+    @Override
+    protected String getFileName(
+            HandlerRequest<EmptyRequestBody, TaskManagerFileMessageParameters> handlerRequest) {
+        return handlerRequest.getPathParameter(LogFileNamePathParameter.class);
+    }
 }

@@ -22,10 +22,10 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.api.dag.Pipeline;
-import org.apache.flink.client.deployment.application.EmbeddedJobClient;
+import org.apache.flink.client.cli.ClientOptions;
 import org.apache.flink.client.deployment.executors.PipelineExecutorUtils;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.configuration.WebOptions;
+import org.apache.flink.configuration.PipelineOptionsInternal;
 import org.apache.flink.core.execution.JobClient;
 import org.apache.flink.core.execution.PipelineExecutor;
 import org.apache.flink.runtime.blob.BlobClient;
@@ -33,99 +33,155 @@ import org.apache.flink.runtime.client.ClientUtils;
 import org.apache.flink.runtime.dispatcher.DispatcherGateway;
 import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.util.FlinkException;
-import org.apache.flink.util.function.FunctionWithException;
+import org.apache.flink.util.function.FunctionUtils;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.net.MalformedURLException;
 import java.util.Collection;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
- * A {@link PipelineExecutor} that invokes directly methods of the
- * {@link org.apache.flink.runtime.dispatcher.DispatcherGateway Dispatcher} and does
- * not go through the REST API.
+ * A base class for {@link PipelineExecutor executors} that invoke directly methods of the {@link
+ * org.apache.flink.runtime.dispatcher.DispatcherGateway Dispatcher} and do not go through the REST
+ * API.
  */
 @Internal
 public class EmbeddedExecutor implements PipelineExecutor {
 
-	private static final Logger LOG = LoggerFactory.getLogger(EmbeddedExecutor.class);
+    private static final Logger LOG = LoggerFactory.getLogger(EmbeddedExecutor.class);
 
-	public static final String NAME = "embedded";
+    public static final String NAME = "embedded";
 
-	private final Collection<JobID> submittedJobIds;
+    private final Collection<JobID> submittedJobIds;
 
-	private final DispatcherGateway dispatcherGateway;
+    private final DispatcherGateway dispatcherGateway;
 
-	/**
-	 * Creates an {@link EmbeddedExecutor}.
-	 * @param submittedJobIds a list that is going to be filled with the job ids of the
-	 *                        new jobs that will be submitted. This is essentially used to return the submitted job ids
-	 *                        to the caller.
-	 * @param dispatcherGateway the dispatcher of the cluster which is going to be used to submit jobs.
-	 */
-	public EmbeddedExecutor(
-			final Collection<JobID> submittedJobIds,
-			final DispatcherGateway dispatcherGateway) {
-		this.submittedJobIds = checkNotNull(submittedJobIds);
-		this.dispatcherGateway = checkNotNull(dispatcherGateway);
-	}
+    private final EmbeddedJobClientCreator jobClientCreator;
 
-	@Override
-	public CompletableFuture<JobClient> execute(final Pipeline pipeline, final Configuration configuration) {
-		checkNotNull(pipeline);
-		checkNotNull(configuration);
+    /**
+     * Creates a {@link EmbeddedExecutor}.
+     *
+     * @param submittedJobIds a list that is going to be filled with the job ids of the new jobs
+     *     that will be submitted. This is essentially used to return the submitted job ids to the
+     *     caller.
+     * @param dispatcherGateway the dispatcher of the cluster which is going to be used to submit
+     *     jobs.
+     */
+    public EmbeddedExecutor(
+            final Collection<JobID> submittedJobIds,
+            final DispatcherGateway dispatcherGateway,
+            final EmbeddedJobClientCreator jobClientCreator) {
+        this.submittedJobIds = checkNotNull(submittedJobIds);
+        this.dispatcherGateway = checkNotNull(dispatcherGateway);
+        this.jobClientCreator = checkNotNull(jobClientCreator);
+    }
 
-		final JobGraph jobGraph = PipelineExecutorUtils.getJobGraph(pipeline, configuration);
-		final JobID actualJobId = jobGraph.getJobID();
+    @Override
+    public CompletableFuture<JobClient> execute(
+            final Pipeline pipeline,
+            final Configuration configuration,
+            ClassLoader userCodeClassloader)
+            throws MalformedURLException {
+        checkNotNull(pipeline);
+        checkNotNull(configuration);
 
-		this.submittedJobIds.add(actualJobId);
-		LOG.info("Job {} is submitted.", actualJobId);
+        final Optional<JobID> optJobId =
+                configuration
+                        .getOptional(PipelineOptionsInternal.PIPELINE_FIXED_JOB_ID)
+                        .map(JobID::fromHexString);
 
-		final Time timeout = Time.milliseconds(configuration.getLong(WebOptions.TIMEOUT));
+        if (optJobId.isPresent() && submittedJobIds.contains(optJobId.get())) {
+            return getJobClientFuture(optJobId.get(), userCodeClassloader);
+        }
 
-		final CompletableFuture<JobID> jobSubmissionFuture = submitJob(
-				dispatcherGateway,
-				blobServerAddress -> new BlobClient(blobServerAddress, configuration),
-				jobGraph,
-				timeout);
+        return submitAndGetJobClientFuture(pipeline, configuration, userCodeClassloader);
+    }
 
-		final EmbeddedJobClient embeddedClient = new EmbeddedJobClient(
-				actualJobId,
-				dispatcherGateway,
-				timeout);
+    private CompletableFuture<JobClient> getJobClientFuture(
+            final JobID jobId, final ClassLoader userCodeClassloader) {
+        LOG.info("Job {} was recovered successfully.", jobId);
+        return CompletableFuture.completedFuture(
+                jobClientCreator.getJobClient(jobId, userCodeClassloader));
+    }
 
-		return jobSubmissionFuture
-				.thenApplyAsync(jobID -> embeddedClient);
-	}
+    private CompletableFuture<JobClient> submitAndGetJobClientFuture(
+            final Pipeline pipeline,
+            final Configuration configuration,
+            final ClassLoader userCodeClassloader)
+            throws MalformedURLException {
+        final Time timeout =
+                Time.milliseconds(configuration.get(ClientOptions.CLIENT_TIMEOUT).toMillis());
 
-	private static CompletableFuture<JobID> submitJob(
-			final DispatcherGateway dispatcherGateway,
-			final FunctionWithException<InetSocketAddress, BlobClient, IOException> blobClientCreator,
-			final JobGraph jobGraph,
-			final Time rpcTimeout) {
-		checkNotNull(blobClientCreator);
-		checkNotNull(jobGraph);
+        final JobGraph jobGraph = PipelineExecutorUtils.getJobGraph(pipeline, configuration);
+        final JobID actualJobId = jobGraph.getJobID();
 
-		LOG.info("Submitting Job with JobId={}.", jobGraph.getJobID());
+        this.submittedJobIds.add(actualJobId);
+        LOG.info("Job {} is submitted.", actualJobId);
 
-		return dispatcherGateway
-				.getBlobServerPort(rpcTimeout)
-				.thenApply(blobServerPort -> new InetSocketAddress(dispatcherGateway.getHostname(), blobServerPort))
-				.thenCompose(blobServerAddress -> {
+        if (LOG.isDebugEnabled()) {
+            LOG.debug("Effective Configuration: {}", configuration);
+        }
 
-					try {
-						ClientUtils.extractAndUploadJobGraphFiles(jobGraph, () -> blobClientCreator.apply(blobServerAddress));
-					} catch (FlinkException e) {
-						throw new CompletionException(e);
-					}
+        final CompletableFuture<JobID> jobSubmissionFuture =
+                submitJob(configuration, dispatcherGateway, jobGraph, timeout);
 
-					return dispatcherGateway.submitJob(jobGraph, rpcTimeout);
-				}).thenApply(ack -> jobGraph.getJobID());
-	}
+        return jobSubmissionFuture
+                .thenApplyAsync(
+                        FunctionUtils.uncheckedFunction(
+                                jobId -> {
+                                    org.apache.flink.client.ClientUtils
+                                            .waitUntilJobInitializationFinished(
+                                                    () ->
+                                                            dispatcherGateway
+                                                                    .requestJobStatus(
+                                                                            jobId, timeout)
+                                                                    .get(),
+                                                    () ->
+                                                            dispatcherGateway
+                                                                    .requestJobResult(
+                                                                            jobId, timeout)
+                                                                    .get(),
+                                                    userCodeClassloader);
+                                    return jobId;
+                                }))
+                .thenApplyAsync(
+                        jobID -> jobClientCreator.getJobClient(actualJobId, userCodeClassloader));
+    }
+
+    private static CompletableFuture<JobID> submitJob(
+            final Configuration configuration,
+            final DispatcherGateway dispatcherGateway,
+            final JobGraph jobGraph,
+            final Time rpcTimeout) {
+        checkNotNull(jobGraph);
+
+        LOG.info("Submitting Job with JobId={}.", jobGraph.getJobID());
+
+        return dispatcherGateway
+                .getBlobServerPort(rpcTimeout)
+                .thenApply(
+                        blobServerPort ->
+                                new InetSocketAddress(
+                                        dispatcherGateway.getHostname(), blobServerPort))
+                .thenCompose(
+                        blobServerAddress -> {
+                            try {
+                                ClientUtils.extractAndUploadJobGraphFiles(
+                                        jobGraph,
+                                        () -> new BlobClient(blobServerAddress, configuration));
+                            } catch (FlinkException e) {
+                                throw new CompletionException(e);
+                            }
+
+                            return dispatcherGateway.submitJob(jobGraph, rpcTimeout);
+                        })
+                .thenApply(ack -> jobGraph.getJobID());
+    }
 }

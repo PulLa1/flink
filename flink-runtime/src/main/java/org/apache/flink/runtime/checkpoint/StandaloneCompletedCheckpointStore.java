@@ -24,107 +24,87 @@ import org.apache.flink.runtime.jobmanager.HighAvailabilityMode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.annotation.concurrent.ThreadSafe;
-
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 
 import static org.apache.flink.util.Preconditions.checkArgument;
-import static org.apache.flink.util.Preconditions.checkState;
 
 /**
  * {@link CompletedCheckpointStore} for JobManagers running in {@link HighAvailabilityMode#NONE}.
  */
-@ThreadSafe
 public class StandaloneCompletedCheckpointStore implements CompletedCheckpointStore {
 
-	private static final Logger LOG = LoggerFactory.getLogger(StandaloneCompletedCheckpointStore.class);
+    private static final Logger LOG =
+            LoggerFactory.getLogger(StandaloneCompletedCheckpointStore.class);
 
-	/** The maximum number of checkpoints to retain (at least 1). */
-	private final int maxNumberOfCheckpointsToRetain;
+    /** The maximum number of checkpoints to retain (at least 1). */
+    private final int maxNumberOfCheckpointsToRetain;
 
-	/** The completed checkpoints. */
-	private final ArrayDeque<CompletedCheckpoint> checkpoints;
+    /** The completed checkpoints. */
+    private final ArrayDeque<CompletedCheckpoint> checkpoints;
 
-	private boolean shutdown = false;
+    /**
+     * Creates {@link StandaloneCompletedCheckpointStore}.
+     *
+     * @param maxNumberOfCheckpointsToRetain The maximum number of checkpoints to retain (at least
+     *     1). Adding more checkpoints than this results in older checkpoints being discarded.
+     */
+    public StandaloneCompletedCheckpointStore(int maxNumberOfCheckpointsToRetain) {
+        checkArgument(maxNumberOfCheckpointsToRetain >= 1, "Must retain at least one checkpoint.");
+        this.maxNumberOfCheckpointsToRetain = maxNumberOfCheckpointsToRetain;
+        this.checkpoints = new ArrayDeque<>(maxNumberOfCheckpointsToRetain + 1);
+    }
 
-	/**
-	 * Creates {@link StandaloneCompletedCheckpointStore}.
-	 *
-	 * @param maxNumberOfCheckpointsToRetain The maximum number of checkpoints to retain (at
-	 *                                       least 1). Adding more checkpoints than this results
-	 *                                       in older checkpoints being discarded.
-	 */
-	public StandaloneCompletedCheckpointStore(int maxNumberOfCheckpointsToRetain) {
-		checkArgument(maxNumberOfCheckpointsToRetain >= 1, "Must retain at least one checkpoint.");
-		this.maxNumberOfCheckpointsToRetain = maxNumberOfCheckpointsToRetain;
-		this.checkpoints = new ArrayDeque<>(maxNumberOfCheckpointsToRetain + 1);
-	}
+    @Override
+    public void recover() throws Exception {
+        // Nothing to do
+    }
 
-	@Override
-	public void recover() throws Exception {
-		// Nothing to do
-	}
+    @Override
+    public void addCheckpoint(
+            CompletedCheckpoint checkpoint,
+            CheckpointsCleaner checkpointsCleaner,
+            Runnable postCleanup)
+            throws Exception {
 
-	@Override
-	public void addCheckpoint(CompletedCheckpoint checkpoint) throws Exception {
+        checkpoints.addLast(checkpoint);
 
-		synchronized (checkpoints) {
-			checkState(!shutdown, "StandaloneCompletedCheckpointStore has been shut down");
+        CheckpointSubsumeHelper.subsume(
+                checkpoints, maxNumberOfCheckpointsToRetain, CompletedCheckpoint::discardOnSubsume);
+    }
 
-			checkpoints.addLast(checkpoint);
+    @Override
+    public List<CompletedCheckpoint> getAllCheckpoints() {
+        return new ArrayList<>(checkpoints);
+    }
 
-			if (checkpoints.size() > maxNumberOfCheckpointsToRetain) {
-				try {
-					CompletedCheckpoint checkpointToSubsume = checkpoints.removeFirst();
-					checkpointToSubsume.discardOnSubsume();
-				} catch (Exception e) {
-					LOG.warn("Fail to subsume the old checkpoint.", e);
-				}
-			}
-		}
-	}
+    @Override
+    public int getNumberOfRetainedCheckpoints() {
+        return checkpoints.size();
+    }
 
-	@Override
-	public List<CompletedCheckpoint> getAllCheckpoints() {
-		synchronized (checkpoints) {
-			return new ArrayList<>(checkpoints);
-		}
-	}
+    @Override
+    public int getMaxNumberOfRetainedCheckpoints() {
+        return maxNumberOfCheckpointsToRetain;
+    }
 
-	@Override
-	public int getNumberOfRetainedCheckpoints() {
-		synchronized (checkpoints) {
-			return checkpoints.size();
-		}
-	}
+    @Override
+    public void shutdown(JobStatus jobStatus, CheckpointsCleaner checkpointsCleaner)
+            throws Exception {
+        try {
+            LOG.info("Shutting down");
 
-	@Override
-	public int getMaxNumberOfRetainedCheckpoints() {
-		return maxNumberOfCheckpointsToRetain;
-	}
+            for (CompletedCheckpoint checkpoint : checkpoints) {
+                checkpoint.discardOnShutdown(jobStatus);
+            }
+        } finally {
+            checkpoints.clear();
+        }
+    }
 
-	@Override
-	public void shutdown(JobStatus jobStatus) throws Exception {
-		synchronized (checkpoints) {
-			if (!shutdown) {
-				shutdown = true;
-				try {
-					LOG.info("Shutting down");
-
-					for (CompletedCheckpoint checkpoint : checkpoints) {
-						checkpoint.discardOnShutdown(jobStatus);
-					}
-				} finally {
-					checkpoints.clear();
-				}
-			}
-		}
-	}
-
-	@Override
-	public boolean requiresExternalizedCheckpoints() {
-		return false;
-	}
+    @Override
+    public boolean requiresExternalizedCheckpoints() {
+        return false;
+    }
 }

@@ -19,24 +19,21 @@
 package org.apache.flink.runtime.rest.messages.taskmanager;
 
 import org.apache.flink.runtime.rest.handler.taskmanager.TaskManagerCustomLogHandler;
+import org.apache.flink.runtime.rest.messages.LogFileNamePathParameter;
 import org.apache.flink.runtime.rest.messages.MessagePathParameter;
 
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 
-/**
- * Parameters for {@link TaskManagerCustomLogHandler}.
- */
+/** Parameters for {@link TaskManagerCustomLogHandler}. */
 public class TaskManagerFileMessageParameters extends TaskManagerMessageParameters {
 
-	public final LogFileNamePathParameter logFileNamePathParameter = new LogFileNamePathParameter();
+    public final LogFileNamePathParameter logFileNamePathParameter = new LogFileNamePathParameter();
 
-	@Override
-	public Collection<MessagePathParameter<?>> getPathParameters() {
-		return Collections.unmodifiableCollection(Arrays.asList(
-			logFileNamePathParameter,
-			taskManagerIdParameter
-		));
-	}
+    @Override
+    public Collection<MessagePathParameter<?>> getPathParameters() {
+        return Collections.unmodifiableCollection(
+                Arrays.asList(logFileNamePathParameter, taskManagerIdParameter));
+    }
 }
